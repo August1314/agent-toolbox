@@ -22,8 +22,12 @@ cd ~/agent-toolbox
 ```bash
 toolbox probe                    # 看看本机各 agent 已装了什么
 toolbox lookup pdf               # 按能力标签查现成工具
-toolbox run <id> --in <输入> --out <输出>
+toolbox run <id> ...             # 参数形状照 lookup 打印的「调用:」那一行拼
 ```
+
+`toolbox lookup` 打印的调用方式是**从索引的 `entry.usage` 原样读出来的**。
+CLI 不替你猜参数 —— 猜出来的提示会被直接照做，错一次就烧掉一轮。
+条目没声明 `usage` 时，它会明说"未声明，先跑烟测看真实接口"。
 
 skill 会自动挂接到各 agent 的 skills 目录，之后 agent 在产出型任务开始前会自己触发。
 
@@ -83,21 +87,26 @@ agent-toolbox/
 |---|---|
 | `toolbox list` | 列出全部工具 |
 | `toolbox lookup <标签>` | 按能力标签查找（标签是技术名词，不是自然语言） |
-| `toolbox run <id> --in .. --out ..` | 调用一个工具 |
+| `toolbox run <id> [--in .. --out ..] [-- 透传]` | 调用一个工具，参数形状看 `entry.usage` |
 | `toolbox probe` | 探测本机各 agent 已装能力 |
+| `toolbox budget` | 检索 / 验证两本账的用量（超限退出码 3） |
 | `toolbox install <源> --as <id>` | 登记一个新工具 |
 
 加 `--json` 得结构化输出。
 
-### 统一调用契约
-
-所有可执行工具都是同一条命令：
+### 统一的是出口，不是参数名
 
 ```bash
-toolbox run <id> --in <输入路径> --out <输出路径> [--opt k=v ...] [-- 透传参数]
+toolbox run <id> <照 lookup「调用:」行拼出的参数>
+toolbox run <id> -- <任意参数>        # 透传给 adapter
 ```
 
-成功时 stdout 输出结果路径，失败时 stderr 输出人类可读原因，退出码非零。
+工具的真实参数形状写在索引的 `entry.usage` 里，由 `lookup` 原样转告。
+统一成 `--in/--out` 只是部分工具的契约 —— 一段旁白文本、一个项目目录都不是文件路径。
+强行统一会让 adapter 编一套假参数，索引与实现就此分家。
+
+不变的是四条：支持 `--selftest`、有前置时支持 `--setup`、
+成功时 stdout 输出产物路径或 JSON、失败时 stderr 给人话 + 非零退出码。
 
 **纯 CLI，无协议依赖** —— 这是唯一在所有 agent 上行为完全一致的调用方式。
 
@@ -117,6 +126,8 @@ toolbox run <id> --in <输入路径> --out <输出路径> [--opt k=v ...] [-- �
   entry:
     command: ./adapter.sh
     args: []
+    usage: "--in <pdf 路径> --out <csv 路径>"   # 真实参数形状，lookup 原样转告
+    setup: ""                                   # 有前置才填
   contract:
     input: PDF 文件路径
     output: CSV 文件路径
@@ -124,14 +135,23 @@ toolbox run <id> --in <输入路径> --out <输出路径> [--opt k=v ...] [-- �
   cost:
     install_minutes: 0
     smoke_test: "./adapter.sh --selftest"
-  verified: true
-  status: ok                  # ok | degraded | broken
+  verified: true                # 仅表示登记当时烟测真跑通，且不低于 L3
+  verified_at: 2026-11-02
+  status: ok                    # ok | needs_setup | unavailable | broken
   broken_reason: null
   added_at: 2026-11-02
 ```
 
 `provides` 是**能力标签** —— 检索按标签匹配，不按名字匹配
 （名字会变、作者会改名、能力不会）。
+
+`status` 四态：`ok` 现在能跑 / `needs_setup` 代码在位但前置未就绪（**新工具的诚实默认值**）
+/ `unavailable` 来源不可达或装不上、写明恢复条件 / `broken` 实测跑不通，`run` 会拒绝。
+
+工具之间可以声明依赖：`depends_on: <另一个 id>`。
+被依赖的 vendor **只存一份** —— 例如 `remotion-timeline-builder` 铺进项目的配音脚本
+直接引用 `tools/voice-over-neural-tts/vendor/`，不再复制第二份。
+两份副本迟早各自漂移，那时"哪份是新的"就没人知道了。
 
 ---
 
@@ -147,30 +167,25 @@ toolbox run <id> --in <输入路径> --out <输出路径> [--opt k=v ...] [-- �
 
 ## 原则与反模式
 
-### 三态决策
+### 四态决策
 
 | 态 | 含义 | 落地 |
 |---|---|---|
-| **复用** | 装入工具箱，任务中用 adapter 调用 | `tools/<id>/` |
-| **借用** | 借鉴流程与结论，不直接调用代码 | `knowledge/<id>.md` |
+| **复用** | 契约契合，装进工具箱用 adapter 调用 | `tools/<id>/` |
+| **借用** | 只有流程与结论有价值，无代码可调 | `knowledge/<id>.md` |
+| **标杆复刻** | 需求是质感 / 风格 / "要有那种感觉" | 先跑通成品，再只换内容层 |
 | **自建** | 检索无解，自己写 | 留在项目里，不进 toolbox |
 
 **「借用」不可省略。** 有些最好的成果不是代码，而是别人已验证过的流程设计。
 只判"装"与"写"的二分，会把这整类高价值复用误判成不可用。
 
-### 反模式（禁止）
+**「标杆复刻」不可省略。** 质感不体现在契约里 —— 按"输入输出是否匹配"筛选，
+只能回答"能不能"，回答不了"好不好看"。
 
-1. **复现** — 重写一遍等于白烧 token
-2. **过度适配** — 改 vendor 代码；适配写在 adapter 层
-3. **索引污染** — 一次性东西塞进 toolbox；工具箱只收可复用的
-4. **检索瘾** — 本地已有还在社区搜三小时；本地命中即止
-5. **知识当代码** — 纯文档伪装成可执行工具；文档进 `knowledge/`
-
-### 搜索预算
-
-- 每环节最多 **4 次**检索调用
-- 单任务跨环节合计 **≤ 12 次**
-- 触顶即强制做决定；超预算继续时必须在产出中写明"此处未穷尽检索"
+完整规则（功能型 / 质感型分诊、静态筛查与可得性预检、验证四级阶梯 L1–L4、
+检索与验证分账、12 条反模式、完成时自检）只写在
+[`skills/reuse-first/SKILL.md`](skills/reuse-first/SKILL.md) 与其 `references/` 里。
+本文件不复述 —— 第三份拷贝迟早会和前两份对不上。
 
 ---
 

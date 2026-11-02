@@ -1,6 +1,14 @@
 # 工具箱索引 —— 由 toolbox CLI 维护，也可手工编辑。
 # provides 是能力标签，检索按标签匹配，不按名字匹配。
 #
+# 字段约定（lookup 会原样转告；写错就等于对下一个使用者撒谎）：
+#   entry.usage   该工具真实接受的参数形状。不填时 lookup 只说"未声明"，不再编模板
+#   entry.setup   前置准备命令（建 venv、下模型等）
+#   status        ok=现在能跑 / needs_setup=代码在位但前置未就绪
+#                 unavailable=来源不可达或装不上（写明恢复条件）/ broken=实测跑不通
+#   verified      true 仅表示"登记时 smoke_test 真跑通过"，配 verified_at；
+#                 它不代表换一台机器、换一个 venv 还能跑
+#
 # tools:
 tools:
   - id: pdf-table-extract
@@ -19,6 +27,7 @@ tools:
     entry:
       command: ./adapter.sh
       args: []
+      usage: "--in <pdf 路径> --out <csv 路径>"
     contract:
       input: PDF 文件路径
       output: CSV 文件路径
@@ -27,6 +36,7 @@ tools:
       install_minutes: 0
       smoke_test: ./adapter.sh --selftest
     verified: true
+    verified_at: 2026-11-02
     status: ok
     broken_reason: null
     added_at: 2026-11-02
@@ -47,12 +57,13 @@ tools:
       output: 分四步的流程决策依据
       limits: 仅适用于会因流程结构错误而返工的任务
     verified: true
+    verified_at: 2026-11-02
     status: ok
     broken_reason: null
     added_at: 2026-11-02
     added_for: 示范借用类条目
   - id: remotion-handdrawn-paper-style
-    name: Remotion 手绘纸张风视频：四件套原语 + 踩坑清单
+    name: Remotion 手绘纸张风：四件套原语 + 编排层坑 + 配音实测
     kind: knowledge
     provides:
       - remotion
@@ -64,6 +75,14 @@ tools:
       - tts
       - subtitle
       - workflow
+      - spring
+      - easing
+      - camera
+      - noise
+      - loudnorm
+      - silence-trim
+      - webgl
+      - verification
     source:
       type: github
       url: "https://github.com/chenyuxiaojin/motionface-op55-handdrawn"
@@ -71,15 +90,16 @@ tools:
     contract:
       input: 一段文案（旁白）+ 一个风格方向（手绘/纸纹/写字）
       output: 可运行的 Remotion 工程 + 78 秒级的 1080p30 成片（零图片素材）
-      limits: 依赖 macOS say 离线配音；Remotion 包版本必须全部一致；4.0.540 在部分环境渲染失败，优先 4.0.489
+      limits: 配音环节已被 voice-over-neural-tts 取代（macOS say 只作最后兜底）；Remotion 包版本必须全部一致；4.0.540 在部分环境渲染失败，优先 4.0.489；渲染需 --gl=angle 才能跑 light-leaks
     cost:
       install_minutes: 3
       smoke_test: "node scripts/build-timeline.mjs && npx remotion render Main out/video.mp4"
     verified: true
+    verified_at: 2026-11-02
     status: ok
     broken_reason: null
     added_at: 2026-11-02
-    added_for: 《表达欲》文章视频；沉淀描线生长/手写文字/纸纹/boil 四件套 + 9 个实际卡住的坑
+    added_for: 《表达欲》文章视频三轮实战；描线生长/手写文字/纸纹/boil 四件套 + 20 条实测坑（第一轮 9 + 编排层 7 + 配音链 4）
   - id: remotion-timeline-builder
     name: Remotion 时间轴构建（TTS 实测时长，不估算）
     kind: executable
@@ -99,15 +119,53 @@ tools:
     entry:
       command: ./adapter.sh
       args: []
+      usage: "--in <Remotion 项目目录>"
+    depends_on: voice-over-neural-tts
     contract:
       input: 一个 Remotion 项目目录（含 package.json 与 scripts/）
-      output: public/timeline.json + public/audio/seg-NN.aiff
-      limits: 依赖 macOS say 与 ffprobe/ffmpeg；文案须与 src/narration.ts 双向一致
+      output: public/timeline.json + public/audio/seg-NN.wav + captions.srt + captions.json
+      limits: 配音环节交给 voice-over-neural-tts（不再用 macOS say，脚本也不存第二份副本）；文案须与 src/narration.ts 双向一致；逐句起止为实测值；本工具把脚本铺进目标项目的 scripts/ 后再由该项目运行；输出路径固定为 <项目>/public/timeline.json，--out 会被拒绝
     cost:
       install_minutes: 0
       smoke_test: "./adapter.sh --selftest"
     verified: true
+    verified_at: 2026-11-02
     status: ok
     broken_reason: null
     added_at: 2026-11-02
     added_for: 从 expression-video 实战项目归位；原误放在 knowledge/ 下，脚本不可被 toolbox run 调用
+  - id: voice-over-neural-tts
+    name: 中文旁白配音链（神经 TTS + 后期 + 实测逐句时间戳）
+    kind: executable
+    provides:
+      - tts
+      - voice-over
+      - narration
+      - chinese-tts
+      - audio-post
+      - loudnorm
+      - caption-timing
+      - edge-tts
+      - sherpa-onnx
+    source:
+      type: pypi
+      url: "edge-tts 7.3.1 (LGPLv3) + sherpa-onnx 2.0.1 (Apache-2.0) + MeloTTS zh_en (MIT)"
+      license: LGPLv3
+    entry:
+      command: ./adapter.sh
+      args: []
+      usage: "-- --text \"<中文旁白>\" --out <wav> [--engine auto|edge|melo] [--voice <voice>] [--rate=-10%] [--pitch=-2Hz] [--pause 0.30]"
+      setup: "toolbox run voice-over-neural-tts -- --setup（建 Python 3.11 venv + 下离线兜底模型，约 159MB）"
+    contract:
+      input: 一段中文旁白文本（可中英混排）
+      output: 48kHz/mono/pcm_s16le WAV + stdout JSON（durationSec 与 sentences[].startSec/endSec 实测起止）
+      limits: edge 后端生成时需联网（渲染读已落盘 WAV，不需网络）；必须用 venv 的 Python 3.11；matcha-icefall-zh 会静默丢拉丁词，已排除；默认 venv 在 tools/voice-over-neural-tts/.venv-voice，已有环境用 VOICE_PY=<python> 覆盖
+    cost:
+      install_minutes: 1
+      smoke_test: "./adapter.sh --selftest"
+    verified: true
+    verified_at: 2026-11-02
+    status: needs_setup
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: expression-video 配音优化实测跑通后归位；替代旧 remotion-timeline-builder 里的 macOS say 环节

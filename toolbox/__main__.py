@@ -4,9 +4,13 @@
 用法：
     toolbox list
     toolbox lookup <能力标签>
-    toolbox run <id> --in <路径> --out <路径> [--opt k=v ...]
+    toolbox run <id> --in <路径> --out <路径>        # 仅当条目声明了 --in/--out 契约
+    toolbox run <id> -- <adapter 参数>              # 其余参数原样透传
     toolbox probe
     toolbox install <来源> --as <id>
+
+调用契约的唯一真相是 index.yaml 里该条目的 entry.usage。
+CLI 不得替工具编造接口 —— 编出来的提示会被直接照做，错一次就烧掉一轮。
 """
 
 import argparse
@@ -190,7 +194,8 @@ def _scalar(v):
     if s == "":
         return '""'
     if any(c in s for c in ":#[]{},&*!|>'\"%@`") or s != s.strip():
-        return '"' + s.replace('"', '\\"') + '"'
+        esc = s.replace("\\", "\\\\").replace('"', '\\"')
+        return '"' + esc + '"'
     return s
 
 
@@ -216,8 +221,10 @@ def _coerce(v):
                     k, val = pair.split(":", 1)
                     out[k.strip()] = _coerce(val.strip())
         return out
-    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-        return v[1:-1]
+    if v.startswith('"') and v.endswith('"'):
+        return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    if v.startswith("'") and v.endswith("'"):
+        return v[1:-1].replace("''", "'")
     if v.isdigit():
         return int(v)
     return v
@@ -314,19 +321,46 @@ def cmd_lookup(args):
         provides = e.get("provides") or []
         if isinstance(provides, str):
             provides = [provides]
-        print(f"[{scope}] {tid}  ({e.get('kind', '?')}, {e.get('status', '?')})")
+        kind = e.get("kind", "?")
+        status = e.get("status", "?")
+        print(f"[{scope}] {tid}  ({kind}, {status})")
         if e.get("name"):
             print(f"  名称: {e['name']}")
         if provides:
             print(f"  能力: {', '.join(provides)}")
+
         entry = e.get("entry") or {}
-        if entry.get("command"):
-            print(f"  调用: toolbox run {tid} --in <输入> --out <输出>")
+        # 调用方式只从条目声明里取。写死模板曾让 lookup 对一个只认
+        # --text/--out 的工具打出 "--in/--out"，照提示调用必被 adapter 拒绝。
+        if kind == "knowledge":
+            print(f"  取用: 读 knowledge/{tid}.md（知识条目不能 toolbox run）")
+        elif entry.get("usage"):
+            print(f"  调用: toolbox run {tid} {entry['usage']}")
+        elif entry.get("command"):
+            print(f"  调用: toolbox run {tid} -- <adapter 参数>"
+                  f"（条目未声明 entry.usage，先跑烟测看真实接口）")
+
+        if status == "needs_setup" or entry.get("setup"):
+            print(f"  前置: {entry.get('setup') or f'未声明 setup，读 tools/{tid}/README.md'}")
+
         contract = e.get("contract") or {}
         if contract.get("input") or contract.get("output"):
             print(f"  契约: {contract.get('input', '?')} -> {contract.get('output', '?')}")
         if contract.get("limits"):
             print(f"  限制: {contract['limits']}")
+
+        cost = e.get("cost") or {}
+        if cost.get("smoke_test"):
+            where = (f"在 tools/{tid}/ 目录内执行" if kind == "executable"
+                     else "知识条目：回原项目复核，toolbox 目录里没有可执行体")
+            print(f"  烟测: {cost['smoke_test']}  （{where}）")
+        when = e.get("verified_at") or e.get("added_at") or "?"
+        if e.get("verified"):
+            meaning = ("登记时烟测真跑通" if kind == "executable"
+                       else "该流程/结论在真实任务里走过一遍")
+            print(f"  验证: {meaning} @ {when} —— 只说明当时成立，换环境需复核")
+        else:
+            print("  验证: 未实测 —— 用之前必须先烟测，别把索引里的描述当证据")
         if e.get("broken_reason"):
             print(f"  已损坏: {e['broken_reason']}")
         print()
@@ -342,6 +376,15 @@ def cmd_run(args):
     entry, scope = merged[args.id]
     if entry.get("status") == "broken":
         die(f"工具 {args.id} 已标记为 broken: {entry.get('broken_reason', '未知')}")
+    if entry.get("status") == "needs_setup":
+        setup = (entry.get("entry") or {}).get("setup") or "读 tools/%s/README.md" % args.id
+        print(f"⚠️  {args.id} 标记为 needs_setup，本机前置未就绪。\n"
+              f"   先执行: {setup}\n"
+              f"   （仍尝试运行，失败请把 status 保持 needs_setup 直到烟测过）",
+              file=sys.stderr)
+    if entry.get("status") == "unavailable":
+        die(f"工具 {args.id} 当前不可用（来源不可达/装不上）: "
+            f"{entry.get('broken_reason', '未记录原因')}")
 
     tool_dir = find_tool_dir(args.id)
     if tool_dir is None:
@@ -402,18 +445,43 @@ MCP_PROBE_FILES = [
 # ---------------------------------------------------------------- budget
 
 BUDGET_FILE = os.path.join(REPO_ROOT, ".budget.json")
-PER_SEGMENT_LIMIT = 4
-PER_TASK_LIMIT = 12
+
+# 两本账分开记：检索（找候选）与验证（跑通候选）是两种成本。
+# 混在一起会让"实测淘汰 5 个配音引擎"这种必要的验证，
+# 读起来像检索失控 —— 于是记录者开始谎报用量，预算机制就废了。
+BUDGET_LIMITS = {
+    "retrieve": {"segment": 4, "task": 12, "label": "检索"},
+    "verify": {"segment": 3, "task": 8, "label": "验证"},
+}
 
 
 def _load_budget():
     if not os.path.exists(BUDGET_FILE):
-        return {"task": None, "segments": {}, "total": 0}
+        return _new_budget(None)
     try:
         with open(BUDGET_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
     except (OSError, ValueError):
-        return {"task": None, "segments": {}, "total": 0}
+        return _new_budget(None)
+    return _normalize_budget(data)
+
+
+def _new_budget(task):
+    return {"task": task, "kinds": {k: {"segments": {}, "total": 0}
+                                    for k in BUDGET_LIMITS}}
+
+
+def _normalize_budget(data):
+    """兼容旧格式（顶层 segments/total 且不分账）。"""
+    if "kinds" not in data:
+        legacy = {"segments": data.get("segments", {}),
+                  "total": data.get("total", 0)}
+        data = {"task": data.get("task"),
+                "kinds": {"retrieve": legacy,
+                          "verify": {"segments": {}, "total": 0}}}
+    for k in BUDGET_LIMITS:
+        data["kinds"].setdefault(k, {"segments": {}, "total": 0})
+    return data
 
 
 def _save_budget(data):
@@ -422,47 +490,62 @@ def _save_budget(data):
 
 
 def cmd_budget(args):
-    """搜索预算计数。让「超预算」变成机制能发现的事，而非靠自觉。
+    """预算计数。让「超预算」变成机制能发现的事，而非靠自觉。
 
     用法：
-        toolbox budget reset --task <任务名>       开始一个新任务
-        toolbox budget spend --segment <环节名>   记一次检索调用
-        toolbox budget status                     查当前用量
+        toolbox budget --reset --task <任务名>
+        toolbox budget --spend --segment <环节名> [--kind retrieve|verify]
+        toolbox budget                      查两本账的用量
     """
-    data = _load_budget()
+    data = _normalize_budget(_load_budget())
 
     if args.reset:
-        data = {"task": args.task or "untitled", "segments": {}, "total": 0}
+        data = _new_budget(args.task or "untitled")
         _save_budget(data)
         print(f"预算已重置: task={data['task']}")
         return
 
+    kind = args.kind or "retrieve"
+    if kind not in BUDGET_LIMITS:
+        die(f"--kind 只支持 {', '.join(BUDGET_LIMITS)}")
+    limits = BUDGET_LIMITS[kind]
+    label = limits["label"]
+
     if args.spend:
+        bucket = data["kinds"][kind]
         seg = args.segment or "default"
-        data["segments"][seg] = data["segments"].get(seg, 0) + 1
-        data["total"] = data.get("total", 0) + 1
+        bucket["segments"][seg] = bucket["segments"].get(seg, 0) + 1
+        bucket["total"] = bucket.get("total", 0) + 1
         _save_budget(data)
-        seg_used = data["segments"][seg]
-        over_seg = seg_used > PER_SEGMENT_LIMIT
-        over_task = data["total"] > PER_TASK_LIMIT
-        print(f"检索调用: 环节[{seg}] {seg_used}/{PER_SEGMENT_LIMIT}  "
-              f"任务合计 {data['total']}/{PER_TASK_LIMIT}")
+        seg_used = bucket["segments"][seg]
+        over_seg = seg_used > limits["segment"]
+        over_task = bucket["total"] > limits["task"]
+        print(f"{label}调用: 环节[{seg}] {seg_used}/{limits['segment']}  "
+              f"任务合计 {bucket['total']}/{limits['task']}")
         if over_seg or over_task:
             print(file=sys.stderr)
-            print("⚠️  预算已超限。必须停止检索并做决定：", file=sys.stderr)
-            print("     装冠军 / 借用 / 自建 / 放弃优化该环节", file=sys.stderr)
-            print("     若仍要继续，在最终产出中写明「此处未穷尽检索」。",
-                  file=sys.stderr)
+            print(f"⚠️  {label}预算已超限。必须停止{label}并做决定：", file=sys.stderr)
+            if kind == "retrieve":
+                print("     装冠军 / 借用 / 标杆复刻 / 自建 / 放弃优化该环节", file=sys.stderr)
+                print("     若仍要继续，在最终产出中写明「此处未穷尽检索」。",
+                      file=sys.stderr)
+            else:
+                print("     选定冠军并停止继续验证；未验证到的部分标 verified: false",
+                      file=sys.stderr)
+                print("     若仍要继续，在最终产出中写明「此处未验证到 L3」。",
+                      file=sys.stderr)
             sys.exit(3)
         return
 
     # status
     print(f"任务: {data.get('task') or '(未开始)'}")
-    print(f"总计: {data.get('total', 0)}/{PER_TASK_LIMIT}")
-    for seg, n in sorted(data.get("segments", {}).items(),
-                         key=lambda kv: -kv[1]):
-        flag = " ⚠️超限" if n > PER_SEGMENT_LIMIT else ""
-        print(f"  {seg}: {n}/{PER_SEGMENT_LIMIT}{flag}")
+    for k, lim in BUDGET_LIMITS.items():
+        bucket = data["kinds"][k]
+        print(f"{lim['label']}: 合计 {bucket.get('total', 0)}/{lim['task']}")
+        for seg, n in sorted(bucket.get("segments", {}).items(),
+                             key=lambda kv: -kv[1]):
+            flag = " ⚠️超限" if n > lim["segment"] else ""
+            print(f"  {seg}: {n}/{lim['segment']}{flag}")
 
 
 def cmd_probe(args):
@@ -535,7 +618,9 @@ def cmd_install(args):
         "kind": args.kind,
         "provides": args.provides or [],
         "source": {"type": args.source, "url": args.url or ""},
-        "status": "ok",
+        "entry": {"command": "./adapter.sh", "args": [],
+                  "usage": "", "setup": ""},
+        "status": "needs_setup",
         "verified": False,
         "added_at": _today(),
     }
@@ -546,14 +631,25 @@ def cmd_install(args):
 
     print(f"已登记: {tool_id}")
     print(f"工具目录: {tool_dir}")
-    print("下一步: 放置 vendor 代码、编写 adapter.sh、补全 index.yaml 的 contract 字段")
+    print("下一步: 放置 vendor 代码、编写 adapter.sh，并补全 index.yaml：")
+    print("  entry.usage —— adapter 真正接受的参数形状（lookup 会原样转告，不许猜）")
+    print("  entry.setup + status —— 前置准备命令；没跑通前置之前 status 保持 needs_setup")
+    print("  contract + cost.smoke_test + verified/verified_at —— 跑过才填 true")
 
 
 def _write_index(path, entries):
-    """写出 index.yaml，保留原有注释头。"""
+    """写出 index.yaml，保留注释头（含字段约定，供人和 agent 对照）。"""
     header = [
         "# 工具箱索引 —— 由 toolbox CLI 维护，也可手工编辑。",
         "# provides 是能力标签，检索按标签匹配，不按名字匹配。",
+        "#",
+        "# 字段约定（lookup 会原样转告；写错就等于对下一个使用者撒谎）：",
+        "#   entry.usage   该工具真实接受的参数形状。不填时 lookup 只说\"未声明\"，不再编模板",
+        "#   entry.setup   前置准备命令（建 venv、下模型等）",
+        "#   status        ok=现在能跑 / needs_setup=代码在位但前置未就绪",
+        "#                 unavailable=来源不可达或装不上（写明恢复条件）/ broken=实测跑不通",
+        "#   verified      true 仅表示\"登记时 smoke_test 真跑通过\"，配 verified_at；",
+        "#                 它不代表换一台机器、换一个 venv 还能跑",
         "#",
         "# tools:",
     ]
@@ -572,18 +668,25 @@ def _today():
 # ---------------------------------------------------------------- main
 
 def main():
+    # --json 挂在每个子命令上，而不是只挂根解析器：
+    # `toolbox lookup x --json` 是最自然的写法，若只支持 `toolbox --json lookup x`，
+    # README 里那句"加 --json 得结构化输出"就会在真实调用顺序上直接报错。
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="以 JSON 输出")
+
     p = argparse.ArgumentParser(prog="toolbox", description="先复用后自建：工具箱 CLI")
     p.add_argument("--json", action="store_true", help="以 JSON 输出")
     sub = p.add_subparsers(dest="cmd")
 
-    sp = sub.add_parser("list", help="列出全部工具")
+    sp = sub.add_parser("list", parents=[common], help="列出全部工具")
     sp.set_defaults(func=cmd_list)
 
-    sp = sub.add_parser("lookup", help="按能力标签查找工具")
+    sp = sub.add_parser("lookup", parents=[common], help="按能力标签查找工具")
     sp.add_argument("query")
     sp.set_defaults(func=cmd_lookup)
 
-    sp = sub.add_parser("run", help="调用一个工具")
+    sp = sub.add_parser("run", help="调用一个工具（参数形状见 lookup 打印的「调用:」行）")
     sp.add_argument("id")
     sp.add_argument("--in", dest="inp")
     sp.add_argument("--out", dest="out")
@@ -592,13 +695,15 @@ def main():
                     help="-- 之后的参数原样透传给 adapter")
     sp.set_defaults(func=cmd_run)
 
-    sp = sub.add_parser("probe", help="探测本机各 agent 已装能力")
+    sp = sub.add_parser("probe", parents=[common], help="探测本机各 agent 已装能力")
     sp.set_defaults(func=cmd_probe)
 
-    sp = sub.add_parser("budget", help="搜索预算计数")
+    sp = sub.add_parser("budget", help="预算计数（检索 / 验证 分两本账）")
     sp.add_argument("--reset", action="store_true", help="重置预算")
     sp.add_argument("--task", help="任务名（配合 --reset）")
-    sp.add_argument("--spend", action="store_true", help="记一次检索调用")
+    sp.add_argument("--spend", action="store_true", help="记一次调用")
+    sp.add_argument("--kind", default="retrieve", choices=sorted(BUDGET_LIMITS),
+                    help="retrieve=找候选的检索，verify=跑通候选的验证")
     sp.add_argument("--segment", help="环节名（配合 --spend）")
     sp.set_defaults(func=cmd_budget)
 
