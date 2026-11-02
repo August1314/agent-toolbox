@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 注意：tools/*/vendor/ 刻意入库。
+# vendor 是「别人的代码，原样存放」——它是工具能跑的前提，
+# 也保证 clone 后开箱即用。上游升级时整体替换该目录即可。
+#
+# 若某个 vendor 体积过大（如模型权重），请单独用
+#   toolbox install <源> --as <id>
+# 重新拉取，并在 index.yaml 里记录来源与版本。
+
+# 临时产物
+*.log
+.DS_Store

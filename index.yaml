@@ -1,0 +1,53 @@
+# 工具箱索引 —— 由 toolbox CLI 维护，也可手工编辑。
+# provides 是能力标签，检索按标签匹配，不按名字匹配。
+#
+# tools:
+tools:
+  - id: pdf-table-extract
+    name: PDF 表格提取（保留合并单元格）
+    kind: executable
+    provides:
+      - pdf
+      - table-extract
+      - csv-export
+      - xlsx-export
+    source:
+      type: github
+      url: ""
+      license: MIT
+      last_commit: 2026-11-02
+    entry:
+      command: ./adapter.sh
+      args: []
+    contract:
+      input: PDF 文件路径
+      output: CSV 文件路径
+      limits: 扫描件不支持；合并单元格不做猜测填充
+    cost:
+      install_minutes: 0
+      smoke_test: ./adapter.sh --selftest
+    verified: true
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: 示范条目，验证调用链路
+  - id: animation-dataflow-pipeline
+    name: 动效数据流：先跑通再蒸馏
+    kind: knowledge
+    provides:
+      - animation
+      - pipeline
+      - workflow
+      - cost-optimization
+    source:
+      type: article
+      url: ""
+    contract:
+      input: 一个含结构正确性要求的多阶段任务
+      output: 分四步的流程决策依据
+      limits: 仅适用于会因流程结构错误而返工的任务
+    verified: true
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: 示范借用类条目
