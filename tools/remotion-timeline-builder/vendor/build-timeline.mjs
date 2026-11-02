@@ -2,18 +2,20 @@
  * build-timeline.mjs — 旁白生成 + 时间轴实测
  *
  * 流程:
- *   1. 逐段调用 macOS `say` 生成 aiff(零成本、离线、可重复)
- *   2. ffprobe 实测每段真实时长(不靠字数估算——语速因音色/标点而异)
- *   3. 累加段时长 + 段间 gap,得到每段的绝对起始秒
- *   4. 产出 public/timeline.json 供 Remotion 消费
+ *   1. 逐段调用 scripts/voice/synth.py(神经 TTS + 后期链)产出 seg-NN.wav
+ *      —— 段内按整句切、句间插可控停顿,每句起止由 ffprobe 实测
+ *   2. 累加段时长 + 段间 gap,得到每段的绝对起始秒
+ *   3. 产出 public/timeline.json / captions.srt / captions.json 供 Remotion 消费
  *
  * 输出(全部由本脚本生成,不手写):
- *   public/audio/seg-00.aiff ... seg-NN.aiff   每段旁白
+ *   public/audio/seg-00.wav ... seg-NN.wav     每段旁白(48kHz/mono/-16 LUFS)
  *   public/timeline.json                       { fps, durationInFrames, segments:[...] }
  *
  * 用法: node scripts/build-timeline.mjs
+ *   首次先跑 bash scripts/voice/setup.sh
+ *   换音色/引擎:VOICE_ID=... ENGINE=auto|edge|melo node scripts/build-timeline.mjs
  */
-import {execFileSync} from 'node:child_process';
+import {spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -21,16 +23,22 @@ import {fileURLToPath} from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const AUDIO_DIR = path.join(ROOT, 'public', 'audio');
+const VOICE_PY =
+  process.env.VOICE_PY ?? path.join(ROOT, '.venv-voice', 'bin', 'python');
+const SYNTH = path.join(ROOT, 'scripts', 'voice', 'synth.py');
 
 /* ── 配置 ─────────────────────────────────────────────────────────── */
-const VOICE = process.env.VOICE ?? 'Tingting'; // macOS 中文音色
-const RATE = process.env.RATE ?? '178'; // 语速(words/min),默认 178 偏慢,适合散文旁白
+const ENGINE = process.env.ENGINE ?? 'auto'; // auto:edge 优先,失败回落离线 melo
+const VOICE_ID = process.env.VOICE_ID ?? 'zh-CN-YunxiNeural'; // 男声,Novel 类
+const RATE = process.env.RATE ?? '-10%'; // 相对语速,散文旁白偏慢
+const PITCH = process.env.PITCH ?? '-2Hz'; // 略压音高,去掉朗读腔的亮尖
+const PAUSE = process.env.PAUSE ?? '0.30'; // 句间静音(秒)
 const FPS = 30;
 
 /* ── 旁白分段(与 src/narration.ts 保持一致) ─────────────────────── */
 /**
  * ⚠️ 这份数据与 src/narration.ts 重复,是刻意的:
- *    本脚本跑在 Node 里(要 spawn `say`),不能 import TS。
+ *    本脚本跑在 Node 里(要 spawn 合成器),不能 import TS。
  *    build-timeline 会校验两边一致 —— 不一致直接报错退出。
  */
 const SEGMENTS = [
@@ -51,32 +59,48 @@ const LEAD_IN_SEC = 0.6;
 const TAIL_SEC = 1.6;
 
 /* ── 工具 ─────────────────────────────────────────────────────────── */
-const sh = (cmd, args) =>
-  execFileSync(cmd, args, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
-
-const probeDuration = (file) => {
-  const out = sh('ffprobe', [
-    '-v', 'error',
-    '-show_entries', 'format=duration',
-    '-of', 'csv=p=0',
-    file,
-  ]).trim();
-  return Number.parseFloat(out);
-};
-
 /**
- * 逐字时间戳权重。
+ * 句内逐字权重。
  *
- * macOS `say` 的中文朗读语速基本均匀(实测 ~4.3 字/s),
- * 但标点处有停顿、拉丁字符/数字更快。所以按权重分配时长:
+ * 神经 TTS 的中文朗读语速也基本均匀,但标点处有停顿、拉丁字符/数字更快。
+ * 所以句内按权重分摊该句【实测】时长:
  *   汉字 1.0 / 拉丁与数字 0.55 / 空格 0.3 / 标点(停顿) 1.7
- * 权重和按比例分摊该段实测时长 —— 得到每个字的实际起止毫秒。
  */
 const charWeight = (ch) => {
   if (/[，。！？、；：""''（）《》…—]/.test(ch)) return 1.7;
   if (/[\s]/.test(ch)) return 0.3;
   if (/[a-zA-Z0-9]/.test(ch)) return 0.55;
   return 1.0;
+};
+
+/**
+ * 一段旁白 → 逐字时间戳。
+ *
+ * 与旧版的区别:旧版把整段时长按字重一把摊平,句间停顿被算进了字的时长里
+ * (于是"。"后面的字会比实际早出现)。现在每句的起止来自 synth.py 的
+ * ffprobe 实测,句内再按字重分摊 —— 停顿归停顿,字归字。
+ */
+const charTimings = (seg) => {
+  const cues = [];
+  for (const s of seg.sentences) {
+    const chars = [...s.text];
+    const weights = chars.map(charWeight);
+    const total = weights.reduce((a, b) => a + b, 0);
+    const baseMs = (seg.startSec + s.startSec) * 1000;
+    const durMs = (s.endSec - s.startSec) * 1000;
+    let acc = 0;
+    for (const [i, ch] of chars.entries()) {
+      const fromMs = baseMs + (acc / total) * durMs;
+      acc += weights[i];
+      cues.push({
+        text: ch,
+        startMs: Math.round(fromMs),
+        endMs: Math.round(baseMs + (acc / total) * durMs),
+        segmentIndex: seg.index,
+      });
+    }
+  }
+  return cues;
 };
 
 const srtTime = (ms) => {
@@ -90,35 +114,26 @@ const srtTime = (ms) => {
 };
 
 /**
- * 生成逐字 SRT。
+ * 逐字 SRT。
  *
  * 关键细节:每段的首字前置一个空格 —— kit 的 createTikTokStyleCaptions
  * 靠「以空格开头」切页,中文没有空格,不这样处理会全片合并成一页。
  */
-const buildSrt = (segments) => {
+const buildSrt = (cues) => {
   const lines = [];
   let idx = 1;
-  for (const seg of segments) {
-    const chars = [...seg.text];
-    const weights = chars.map(charWeight);
-    const total = weights.reduce((a, b) => a + b, 0);
-    const startMs = seg.startSec * 1000;
-    const durMs = seg.durationSec * 1000;
-
-    let acc = 0;
-    chars.forEach((ch, i) => {
-      const fromMs = startMs + (acc / total) * durMs;
-      acc += weights[i];
-      const toMs = startMs + (acc / total) * durMs;
-      // 首字前加空格 → 让 TikTok 分页在此断开
-      const text = i === 0 && seg.index > 0 ? ` ${ch}` : ch;
-      lines.push(
-        String(idx++),
-        `${srtTime(fromMs)} --> ${srtTime(toMs)}`,
-        text,
-        '',
-      );
-    });
+  let prevSeg = -1;
+  for (const c of cues) {
+    const isFirstOfSegment = c.segmentIndex !== prevSeg;
+    prevSeg = c.segmentIndex;
+    const text =
+      isFirstOfSegment && c.segmentIndex > 0 ? ` ${c.text}` : c.text;
+    lines.push(
+      String(idx++),
+      `${srtTime(c.startMs)} --> ${srtTime(c.endMs)}`,
+      text,
+      '',
+    );
   }
   return lines.join('\n');
 };
@@ -156,39 +171,49 @@ let cursor = LEAD_IN_SEC;
 
 SEGMENTS.forEach((seg, i) => {
   const stem = `seg-${String(i).padStart(2, '0')}`;
-  const tmpAiff = path.join(AUDIO_DIR, `${stem}.aiff`);
-  // ⚠️ 必须转成 WAV:
-  //    Remotion 内置的 ffprobe 对 macOS AIFF 支持不全,渲染时探测音频失败
-  //    (系统 ffprobe 能读,但它用的是自带副本 → 渲染中断)。
+  // 48kHz/mono/pcm_s16le —— 由 synth.py 统一重采样并过后期链
   const outWav = path.join(AUDIO_DIR, `${stem}.wav`);
 
-  sh('say', ['-v', VOICE, '-r', RATE, '-o', tmpAiff, seg.text]);
-  sh('ffmpeg', [
-    '-y',
-    '-loglevel', 'error',
-    '-i', tmpAiff,
-    '-ar', '44100',
-    '-ac', '1',
-    '-c:a', 'pcm_s16le',
-    outWav,
-  ]);
-  fs.unlinkSync(tmpAiff);
+  if (!fs.existsSync(VOICE_PY)) {
+    console.error(`✗ 缺配音环境:${VOICE_PY}\n  先跑:bash scripts/voice/setup.sh`);
+    process.exit(1);
+  }
+  // 值用 --opt=value 形式:argparse 会把裸 "-10%" 当成选项名
+  const r = spawnSync(VOICE_PY, [
+    SYNTH,
+    `--text=${seg.text}`,
+    `--out=${outWav}`,
+    `--engine=${ENGINE}`,
+    `--voice=${VOICE_ID}`,
+    `--rate=${RATE}`,
+    `--pitch=${PITCH}`,
+    `--pause=${PAUSE}`,
+  ], {encoding: 'utf8'});
+  if (r.status !== 0) {
+    console.error(`✗ ${seg.id} 合成失败:\n${r.stderr?.slice(-800) ?? ''}`);
+    process.exit(1);
+  }
+  if (r.stderr?.trim()) console.log(`  ! ${r.stderr.trim().split('\n').pop()}`);
+  const synth = JSON.parse(r.stdout.trim().split('\n').pop());
 
-  const dur = probeDuration(outWav);
   segments.push({
     id: seg.id,
     index: i,
     text: seg.text,
     audio: `audio/${stem}.wav`,
     startSec: Number(cursor.toFixed(3)),
-    durationSec: Number(dur.toFixed(3)),
+    durationSec: synth.durationSec,
     chars: seg.text.length,
+    engine: synth.engine,
+    // 段内相对秒 —— synth.py 实测,不是估算;字幕按它锚定
+    sentences: synth.sentences,
   });
   console.log(
     `  ${String(i).padStart(2, '0')} ${seg.id.padEnd(9)} ` +
-      `${dur.toFixed(2)}s  ${seg.text.length}字  ${(seg.text.length / dur).toFixed(2)}字/s`,
+      `${synth.durationSec.toFixed(2)}s  ${seg.text.length}字  ` +
+      `${synth.sentences.length}句  [${synth.engine}]`,
   );
-  cursor += dur + GAP_SEC;
+  cursor += synth.durationSec + GAP_SEC;
 });
 
 const contentEnd = cursor - GAP_SEC;
@@ -199,8 +224,11 @@ const timeline = {
   width: 1920,
   height: 1080,
   durationInFrames: Math.round(totalSec * FPS),
-  voice: VOICE,
+  voice: VOICE_ID,
+  engine: ENGINE,
   rate: RATE,
+  pitch: PITCH,
+  pauseSec: Number(PAUSE),
   segments: segments.map((s) => ({
     ...s,
     startFrame: Math.round(s.startSec * FPS),
@@ -213,32 +241,22 @@ fs.writeFileSync(
   JSON.stringify(timeline, null, 2),
 );
 
+// 逐字时间戳算一次,SRT 与 JSON 都从它出 —— 两份产物必须同源,否则字幕
+// 高亮和 kit 分页会各自漂移。
+const cues = segments.flatMap(charTimings);
+
 // 逐字 SRT(供 kit 的 SrtCaptions 组件做词级高亮)
-const srt = buildSrt(segments);
+const srt = buildSrt(cues);
 fs.writeFileSync(path.join(ROOT, 'public', 'captions.srt'), srt);
 
 // 逐字 caption 数据(供 src/captions.ts 直接 import ——
 // Remotion 的 webpack 不保证支持 ?raw loader,故同时输出 JSON)
-const captionData = [];
-segments.forEach((seg) => {
-  const chars = [...seg.text];
-  const weights = chars.map(charWeight);
-  const total = weights.reduce((a, b) => a + b, 0);
-  const startMs = seg.startSec * 1000;
-  const durMs = seg.durationSec * 1000;
-  let acc = 0;
-  chars.forEach((ch, i) => {
-    const fromMs = startMs + (acc / total) * durMs;
-    acc += weights[i];
-    const toMs = startMs + (acc / total) * durMs;
-    captionData.push({
-      text: ch,
-      startMs: Math.round(fromMs),
-      endMs: Math.round(toMs),
-      segmentIndex: seg.index,
-    });
-  });
-});
+const captionData = cues.map((c) => ({
+  text: c.text,
+  startMs: c.startMs,
+  endMs: c.endMs,
+  segmentIndex: c.segmentIndex,
+}));
 fs.writeFileSync(
   path.join(ROOT, 'public', 'captions.json'),
   JSON.stringify(captionData),
