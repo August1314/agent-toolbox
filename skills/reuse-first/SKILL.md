@@ -352,6 +352,8 @@ toolbox budget                                                   # 查两本账
 - [ ] 失败的工具是否标记 `broken`（暂时性障碍标 `unavailable`）并记录原因？
 - [ ] 新工具 / 新坑是否可被 `toolbox lookup <能力标签>` 命中？
       **声称"已沉淀"的内容，逐条 grep 得到关键词才算沉淀**
+- [ ] 若这轮改动要把工具箱发布出去：设计文档、试错日志、对其它本地项目的引用是否都留在本机？
+      （判据：**clone 的人会不会用到它** —— 过程记录对作者有意义，对使用者是噪音）
 
 **三个核心指标：**
 - "本该复用却自建的环节还剩几个"
@@ -365,6 +367,6 @@ toolbox budget                                                   # 查两本账
 - `references/segment-detection.md` — 环节识别细则、判定对照表、拆解粒度
 - `references/searching.md` — 四源具体查法、搜索词构造（含质感型）、检索/验证分账
 - `references/screening-and-install.md` — 静态筛查、可得性预检、验证四级阶梯（L1–L4）、
-  四态决策、装入规范、`status` / `verified` 词表、失败分档
+  四态决策、装入规范、`status` / `verified` 词表、失败分档、发布时该发什么
 - `references/quality-texture.md` — 质感型任务：开源边界预检、标杆复刻四步、
   八维差异清单（含连贯与缓动分派）、静帧验收、失败案例复盘
