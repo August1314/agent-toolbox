@@ -73,7 +73,6 @@ agent-toolbox/
 │   └── toolbox-launcher.sh # CLI 启动器模板
 ├── skills/reuse-first/
 │   └── SKILL.md            # skill 源文件（唯一一份）
-├── docs/plans/             # 设计文档
 └── install.sh
 ```
 
@@ -189,9 +188,16 @@ toolbox run <id> -- <任意参数>        # 透传给 adapter
 
 ---
 
-## 设计文档
+## 规范在哪里
 
-- [先复用后自建 · 设计](docs/plans/2026-11-02-reuse-first-design.md)
+本仓库公开的规范只有三处，它们彼此一致、互为校验：
+
+- `skills/reuse-first/SKILL.md` —— 流程与规则（唯一权威）
+- `skills/reuse-first/references/*.md` —— 各环节细则
+- `index.yaml` 顶部注释 —— 索引字段与 `status` / `verified` 词表
+
+设计与决策记录（含被实战推翻的决定的原始版本与废止理由）留在本机 `docs/plans/`，
+不随工具发布 —— 过程性文档属于作者，不属于被装走的那个人。
 
 ---
 
