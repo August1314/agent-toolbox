@@ -13,3 +13,6 @@ __pycache__/
 # 临时产物
 *.log
 .DS_Store
+
+# 运行时状态：搜索预算计数，属于本机状态不入库
+.budget.json

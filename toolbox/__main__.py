@@ -399,6 +399,72 @@ MCP_PROBE_FILES = [
 ]
 
 
+# ---------------------------------------------------------------- budget
+
+BUDGET_FILE = os.path.join(REPO_ROOT, ".budget.json")
+PER_SEGMENT_LIMIT = 4
+PER_TASK_LIMIT = 12
+
+
+def _load_budget():
+    if not os.path.exists(BUDGET_FILE):
+        return {"task": None, "segments": {}, "total": 0}
+    try:
+        with open(BUDGET_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"task": None, "segments": {}, "total": 0}
+
+
+def _save_budget(data):
+    with open(BUDGET_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def cmd_budget(args):
+    """搜索预算计数。让「超预算」变成机制能发现的事，而非靠自觉。
+
+    用法：
+        toolbox budget reset --task <任务名>       开始一个新任务
+        toolbox budget spend --segment <环节名>   记一次检索调用
+        toolbox budget status                     查当前用量
+    """
+    data = _load_budget()
+
+    if args.reset:
+        data = {"task": args.task or "untitled", "segments": {}, "total": 0}
+        _save_budget(data)
+        print(f"预算已重置: task={data['task']}")
+        return
+
+    if args.spend:
+        seg = args.segment or "default"
+        data["segments"][seg] = data["segments"].get(seg, 0) + 1
+        data["total"] = data.get("total", 0) + 1
+        _save_budget(data)
+        seg_used = data["segments"][seg]
+        over_seg = seg_used > PER_SEGMENT_LIMIT
+        over_task = data["total"] > PER_TASK_LIMIT
+        print(f"检索调用: 环节[{seg}] {seg_used}/{PER_SEGMENT_LIMIT}  "
+              f"任务合计 {data['total']}/{PER_TASK_LIMIT}")
+        if over_seg or over_task:
+            print(file=sys.stderr)
+            print("⚠️  预算已超限。必须停止检索并做决定：", file=sys.stderr)
+            print("     装冠军 / 借用 / 自建 / 放弃优化该环节", file=sys.stderr)
+            print("     若仍要继续，在最终产出中写明「此处未穷尽检索」。",
+                  file=sys.stderr)
+            sys.exit(3)
+        return
+
+    # status
+    print(f"任务: {data.get('task') or '(未开始)'}")
+    print(f"总计: {data.get('total', 0)}/{PER_TASK_LIMIT}")
+    for seg, n in sorted(data.get("segments", {}).items(),
+                         key=lambda kv: -kv[1]):
+        flag = " ⚠️超限" if n > PER_SEGMENT_LIMIT else ""
+        print(f"  {seg}: {n}/{PER_SEGMENT_LIMIT}{flag}")
+
+
 def cmd_probe(args):
     """探测本机各 agent 已装能力。这是跨 agent 的关键：skill 层不含路径，
     全部由 CLI 代劳。"""
@@ -528,6 +594,13 @@ def main():
 
     sp = sub.add_parser("probe", help="探测本机各 agent 已装能力")
     sp.set_defaults(func=cmd_probe)
+
+    sp = sub.add_parser("budget", help="搜索预算计数")
+    sp.add_argument("--reset", action="store_true", help="重置预算")
+    sp.add_argument("--task", help="任务名（配合 --reset）")
+    sp.add_argument("--spend", action="store_true", help="记一次检索调用")
+    sp.add_argument("--segment", help="环节名（配合 --spend）")
+    sp.set_defaults(func=cmd_budget)
 
     sp = sub.add_parser("install", help="登记一个新工具")
     sp.add_argument("source")
