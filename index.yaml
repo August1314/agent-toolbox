@@ -51,3 +51,63 @@ tools:
     broken_reason: null
     added_at: 2026-11-02
     added_for: 示范借用类条目
+  - id: remotion-handdrawn-paper-style
+    name: Remotion 手绘纸张风视频：四件套原语 + 踩坑清单
+    kind: knowledge
+    provides:
+      - remotion
+      - video
+      - animation
+      - svg
+      - handdrawn
+      - captions
+      - tts
+      - subtitle
+      - workflow
+    source:
+      type: github
+      url: "https://github.com/chenyuxiaojin/motionface-op55-handdrawn"
+      license: MIT
+    contract:
+      input: 一段文案（旁白）+ 一个风格方向（手绘/纸纹/写字）
+      output: 可运行的 Remotion 工程 + 78 秒级的 1080p30 成片（零图片素材）
+      limits: 依赖 macOS say 离线配音；Remotion 包版本必须全部一致；4.0.540 在部分环境渲染失败，优先 4.0.489
+    cost:
+      install_minutes: 3
+      smoke_test: "node scripts/build-timeline.mjs && npx remotion render Main out/video.mp4"
+    verified: true
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: 《表达欲》文章视频；沉淀描线生长/手写文字/纸纹/boil 四件套 + 9 个实际卡住的坑
+  - id: remotion-timeline-builder
+    name: Remotion 时间轴构建（TTS 实测时长，不估算）
+    kind: executable
+    provides:
+      - remotion
+      - timeline
+      - tts
+      - subtitle
+      - caption
+      - say
+      - ffprobe
+      - audio-duration
+    source:
+      type: own-history
+      url: "~/Downloads/ai-video/expression-video/scripts/build-timeline.mjs"
+      license: MIT
+    entry:
+      command: ./adapter.sh
+      args: []
+    contract:
+      input: 一个 Remotion 项目目录（含 package.json 与 scripts/）
+      output: public/timeline.json + public/audio/seg-NN.aiff
+      limits: 依赖 macOS say 与 ffprobe/ffmpeg；文案须与 src/narration.ts 双向一致
+    cost:
+      install_minutes: 0
+      smoke_test: "./adapter.sh --selftest"
+    verified: true
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: 从 expression-video 实战项目归位；原误放在 knowledge/ 下，脚本不可被 toolbox run 调用
