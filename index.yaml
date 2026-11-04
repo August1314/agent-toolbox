@@ -1,5 +1,8 @@
 # 工具箱索引 —— 由 toolbox CLI 维护，也可手工编辑。
 # provides 是能力标签，检索按标签匹配，不按名字匹配。
+# lookup 只做子串匹配，且**只读 provides/name/kind/status/contract 的输入输出，不读正文** ——
+# 所以标签要写"卡住那一刻会敲进去的症状词"（中英都写），写完拿那些词回查一遍自己；
+# 查不到的条目等于不存在。
 #
 # 字段约定（lookup 会原样转告；写错就等于对下一个使用者撒谎）：
 #   entry.usage   该工具真实接受的参数形状。不填时 lookup 只说"未声明"，不再编模板
@@ -220,15 +223,22 @@ tools:
       - agent-kit
       - remotion
       - baseline
+      - reference-film
+      - 参考片
+      - 同构比对
       - qc-gates
       - narration
       - fact-check
       - multi-agent
       - license
       - vendor-hygiene
+      - lessons
+      - pitfalls
+      - 坑清单
       - network-reachability
       - edge-tts
       - verifier-contract
+      - smoke-test
     source:
       type: own-history
       url: "https://github.com/Vincentwei1021/anything2explainer"
