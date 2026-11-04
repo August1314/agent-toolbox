@@ -25,8 +25,11 @@
 | 要"信息密度高、节奏快、动效多"的观感，且愿意照它的产线走 | 只要一张静态图或 10 秒内的短片（它的阶段 0→8 比片子长） |
 | 个人 / 非商用 | **商用**：PolyForm Noncommercial 需作者授权，成片不得商用分发 |
 
-边界与成本：默认 1280×720@30；整片渲染 10–40 分钟；vendor 目录 286MB（其中
-`template/node_modules` 263MB —— **装在调用侧，别让它在 vendor 里长出来**）；
+边界与成本：默认 1280×720@30；整片渲染 10–40 分钟；vendor 目录本应约 23MB，
+但被误装出过 `template/node_modules` 263MB（vendor 一度 286MB）——
+`template/.gitignore` 第一条就写着 `node_modules/`，上游从未打算让它进 vendor，
+依赖属于调用侧的工程副本。**2026-11-04 已清**（删 `node_modules` 与随之多出的
+`package-lock.json`，vendor 回到 23MB；工程侧 642MB 依赖原样在位，`npx tsc --noEmit` 退出码 0）；
 Python 侧要 venv（edge-tts / numpy / pillow / scipy）。
 
 ## 三、基线：跑不动的标杆怎么验（同构比对三档）
