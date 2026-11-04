@@ -6,8 +6,16 @@
 #   entry.setup   前置准备命令（建 venv、下模型等）
 #   status        ok=现在能跑 / needs_setup=代码在位但前置未就绪
 #                 unavailable=来源不可达或装不上（写明恢复条件）/ broken=实测跑不通
-#   verified      true 仅表示"登记时 smoke_test 真跑通过"，配 verified_at；
-#                 它不代表换一台机器、换一个 venv 还能跑
+#   verified      含义跟着条目形态走（lookup 的「验证:」行会说清是哪种）：
+#                 可执行条目 = 登记时 smoke_test 真跑通过；
+#                 文档 / 知识条目 = 该流程或结论在真实任务里走过一遍（没有可执行体，谈不上烟测）。
+#                 两种都配 verified_at，且都不代表换一台机器、换一个 venv 还能跑
+#   cost.smoke_test 必须是**真做得到、而且真做过**的动作 —— 下一个 agent 会照它执行。
+#                 被证伪时立刻改写成实际执行的那个动作，别留着让人白跑一轮
+#   能不能 toolbox run 由 entry.command 指向的**文件本身**决定（存在 + 可执行位），
+#                 不由 kind 的名字决定：入口是 SKILL.md / 文档时 lookup 打「取用: + 用法:」，
+#                 可执行时才打「调用:」；run 打在文档型条目上会明确拒绝
+#   source.license 每次 lookup 都会打出来 —— 非商用 / 需署名的约束要在调用现场可见
 #
 # tools:
 tools:
@@ -90,7 +98,7 @@ tools:
     contract:
       input: 一段文案（旁白）+ 一个风格方向（手绘/纸纹/写字）
       output: 可运行的 Remotion 工程 + 78 秒级的 1080p30 成片（零图片素材）
-      limits: 配音环节已被 voice-over-neural-tts 取代（macOS say 只作最后兜底）；Remotion 包版本必须全部一致；4.0.540 在部分环境渲染失败，优先 4.0.489；渲染需 --gl=angle 才能跑 light-leaks
+      limits: 配音环节已被 voice-over-neural-tts 取代（macOS say 只作最后兜底）；Remotion 包版本必须全部一致；4.0.540 在部分环境渲染失败，优先 4.0.489（**版本事实会过期**：2026-11-03 另一条链路上工具钉的 4.0.507 装通渲通 —— 只当历史证据，本轮仍以自测为准）；渲染需 --gl=angle 才能跑 light-leaks
     cost:
       install_minutes: 3
       smoke_test: "node scripts/build-timeline.mjs && npx remotion render Main out/video.mp4"
@@ -159,7 +167,7 @@ tools:
     contract:
       input: 一段中文旁白文本（可中英混排）
       output: 48kHz/mono/pcm_s16le WAV + stdout JSON（durationSec 与 sentences[].startSec/endSec 实测起止）
-      limits: edge 后端生成时需联网（渲染读已落盘 WAV，不需网络）；必须用 venv 的 Python 3.11；matcha-icefall-zh 会静默丢拉丁词，已排除；默认 venv 在 tools/voice-over-neural-tts/.venv-voice，已有环境用 VOICE_PY=<python> 覆盖
+      limits: edge 后端生成时需联网（渲染读已落盘 WAV，不需网络）；必须用 venv 的 Python 3.11；matcha-icefall-zh 会静默丢拉丁词，已排除；默认 venv 在 tools/voice-over-neural-tts/.venv-voice，已有环境用 VOICE_PY=<python> 覆盖（本机可用 VOICE_PY=/Users/lianglihang/.venvs/a2e/bin/python 跑 edge 后端，但该 venv 无 sherpa_onnx，melo 离线兜底不可用）
     cost:
       install_minutes: 1
       smoke_test: "./adapter.sh --selftest"
@@ -169,3 +177,69 @@ tools:
     broken_reason: null
     added_at: 2026-11-02
     added_for: expression-video 配音优化实测跑通后归位；替代旧 remotion-timeline-builder 里的 macOS say 环节
+  - id: anything2explainer
+    name: anything2explainer（黑画布动效解说片 agent skill：模板+原语+光效+QC+参考片）
+    kind: skill
+    provides:
+      - explainer-video
+      - remotion
+      - black-canvas
+      - kinetic-typography
+      - tts
+      - subtitles
+      - qc
+    source:
+      type: github
+      url: https://github.com/Vincentwei1021/anything2explainer
+      license: PolyForm-Noncommercial-1.0.0
+      last_commit: 2026-11-02
+    entry:
+      command: SKILL.md
+      args: []
+      usage: "按 SKILL.md 方法调用：输入选题或文章 + 时长/语言；接口命令抄录见使用方工程的 TOOL_INTERFACE.md"
+      setup: "调用侧建 venv（edge-tts / numpy / pillow / scipy）+ 在工程副本里 npm install；依赖装在调用侧，不要让 vendor 长出 node_modules"
+    depends_on: explainer-video-agent-kit
+    contract:
+      input: 主题或文章 + 目标时长 + 语言（zh/en）
+      output: H.264 MP4（配音+字级字幕+章节 HUD/进度条）+ paper trail
+      limits: PolyForm Noncommercial：非商用免费、成片归创作者、商用需作者授权；默认 1280x720@30；整片渲染 10–40 分钟；用它的代码就要走它自己的四道用户闸门与 QC 阈值
+    cost:
+      install_minutes: 15
+      smoke_test: "new_project.sh 出工程 → npx tsc --noEmit → scripts/still.sh Overlay 40,120,200,280 出覆盖层帧，与 examples/rag/frames 样片逐项对：黑画布 / 幕底 / 白线稿+紫重点 / 字体与描边规格（这四项链上一轮真比对过）。字幕带、进度条、HUD、章节卡、流程轨是占位时间轴的派生量，空工程里出不来，属验不到项，别在烟测里宣称对过"
+    verified: false
+    verified_at: null
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-02
+    added_for: Harness 灵魂视频（标杆复刻）；原登记烟测"渲染 examples/rag 参考片"已证伪——该目录只有 23 张成品帧 + 9 个镜头源码，无 package.json，跑不了，故 smoke_test 改为实际执行过的同构比对；占位时间轴（TOTAL_FRAMES=300 / CHAPTER_STARTS=[] / SENTENCES=[] / SUBS=[]）派生出**七项**验不到：章节卡、进度条章节标签、分隔线、HUD、流程轨、字幕带、末段边界 LAST_TO —— 全部顺延到有真实帧号后复验，因此 verified 保持 false（逐项来源见 knowledge/explainer-video-agent-kit.md §3）
+  - id: explainer-video-agent-kit
+    name: 整包 agent skill 当工具用：黑画布解说片产线的坑与基线降级
+    kind: knowledge
+    provides:
+      - explainer-video
+      - agent-kit
+      - remotion
+      - baseline
+      - qc-gates
+      - narration
+      - fact-check
+      - multi-agent
+      - license
+      - vendor-hygiene
+      - network-reachability
+      - edge-tts
+      - verifier-contract
+    source:
+      type: own-history
+      url: "https://github.com/Vincentwei1021/anything2explainer"
+      license: PolyForm-Noncommercial-1.0.0
+    contract:
+      input: 一个要把"整套他人方法仓库（skill + 模板 + QC）"当工具直接调用的质感型任务
+      output: 六节判断——用与不用及成本边界 / 标杆跑不动时的同构比对三档 / 按层归类的可 grep 坑 / 拟上游清单 / 本机状态
+      limits: 只对"入口是文档、参考成品是产物文件"的整包 skill 有效；纯可执行工具仍走 adapter 烟测。卡片里的坑来自 2026-11-02~03 单条链路，换环境仍需逐条自测；上位工具 anything2explainer 因分段 QC 未完成保持 verified: false，本卡记录的是"怎么用"的经验，不是"它已验收"
+    verified: true
+    verified_at: 2026-11-04
+    status: ok
+    broken_reason: null
+    added_at: 2026-11-04
+    added_for: 把坑写进 vendor 的 lessons.md 会被上游重取冲掉——落点改为我们自己的 knowledge 卡；三轮 Harness 实测沉淀（源×下载器×时段矩阵、基线三档降级与七项验不到、校验器隐式格式契约、自推公式假 PASS、修正后的描述仍发假证书、片尾压黑吃收尾、工具反向硬约束重塑内容层）

@@ -258,6 +258,36 @@ def find_tool_dir(tool_id):
     return None
 
 
+def entry_form(tool_dir, meta):
+    """条目到底能不能被 toolbox run —— 判据是入口文件本身，不是 kind 的名字。
+
+    只按 kind == "executable" 分支踩过一次：把别人一整套 agent skill（入口是
+    SKILL.md）登记进来后，lookup 仍然打出 "调用: toolbox run <id> <散文>"，
+    而那条命令抄进终端必挂。CLI 不能替工具编造一个可执行面。
+
+    返回 (形态, 入口绝对路径)：executable / document / missing / nowhere。
+    """
+    if tool_dir is None:
+        return "nowhere", None
+    cmd = meta.get("command") or "./adapter.sh"
+    path = cmd if os.path.isabs(cmd) else os.path.join(tool_dir, cmd)
+    if os.path.isfile(path):
+        if os.access(path, os.X_OK):
+            return "executable", path
+        return "document", path
+    return "missing", path
+
+
+def rel_of(path):
+    """相对仓库根的入口路径；path 可能为 None（条目在本机没有目录）。"""
+    if not path:
+        return "（本机无入口）"
+    try:
+        return os.path.relpath(path, REPO_ROOT)
+    except ValueError:
+        return path
+
+
 # ---------------------------------------------------------------- list
 
 def cmd_list(args):
@@ -330,15 +360,34 @@ def cmd_lookup(args):
             print(f"  能力: {', '.join(provides)}")
 
         entry = e.get("entry") or {}
+        form, path = entry_form(find_tool_dir(tid), entry)
+
         # 调用方式只从条目声明里取。写死模板曾让 lookup 对一个只认
         # --text/--out 的工具打出 "--in/--out"，照提示调用必被 adapter 拒绝。
+        # 而 kind 名也不能决定"能不能 run"：一整套 agent skill 的入口是 SKILL.md，
+        # 拼出来的 "toolbox run <id> <散文>" 是一条跑不动的假命令。
         if kind == "knowledge":
             print(f"  取用: 读 knowledge/{tid}.md（知识条目不能 toolbox run）")
-        elif entry.get("usage"):
-            print(f"  调用: toolbox run {tid} {entry['usage']}")
-        elif entry.get("command"):
-            print(f"  调用: toolbox run {tid} -- <adapter 参数>"
-                  f"（条目未声明 entry.usage，先跑烟测看真实接口）")
+        elif form == "executable":
+            if entry.get("usage"):
+                print(f"  调用: toolbox run {tid} {entry['usage']}")
+            else:
+                print(f"  调用: toolbox run {tid} -- <adapter 参数>"
+                      f"（条目未声明 entry.usage，先跑烟测看真实接口）")
+        elif form == "document":
+            print(f"  取用: 读 {rel_of(path)}，按其中的方法调用（入口不是可执行体，不能 toolbox run）")
+            if entry.get("usage"):
+                print(f"  用法: {entry['usage']}")
+        elif form == "missing":
+            print(f"  取用: ⚠️ 登记的入口 {entry.get('command') or './adapter.sh'} "
+                  f"在 tools/{tid}/ 里不存在 —— 先重装或修正 entry.command")
+        else:
+            print(f"  取用: ⚠️ 索引有记录但本机没有 tools/{tid}/ 目录")
+
+        src = e.get("source") or {}
+        if src.get("license"):
+            origin = f"  （来源 {src['url']}）" if src.get("url") else ""
+            print(f"  许可: {src['license']}{origin}")
 
         if status == "needs_setup" or entry.get("setup"):
             print(f"  前置: {entry.get('setup') or f'未声明 setup，读 tools/{tid}/README.md'}")
@@ -351,12 +400,22 @@ def cmd_lookup(args):
 
         cost = e.get("cost") or {}
         if cost.get("smoke_test"):
-            where = (f"在 tools/{tid}/ 目录内执行" if kind == "executable"
-                     else "知识条目：回原项目复核，toolbox 目录里没有可执行体")
+            # 分支逐个判，别用字典字面量：字面量会把所有值都算一遍，
+            # 于是 path 为 None 的条目（索引有记录、本机没目录）当场 TypeError。
+            if kind == "knowledge":
+                where = "知识条目：回原项目复核，toolbox 目录里没有可执行体"
+            elif form == "executable":
+                where = f"在 tools/{tid}/ 目录内执行"
+            elif form == "document":
+                where = f"按 {rel_of(path)} 的流程真跑一遍到出产物"
+            elif form == "missing":
+                where = "入口缺失，先补装再谈烟测"
+            else:
+                where = "本机没有该工具目录，先装"
             print(f"  烟测: {cost['smoke_test']}  （{where}）")
         when = e.get("verified_at") or e.get("added_at") or "?"
         if e.get("verified"):
-            meaning = ("登记时烟测真跑通" if kind == "executable"
+            meaning = ("登记时烟测真跑通" if form == "executable"
                        else "该流程/结论在真实任务里走过一遍")
             print(f"  验证: {meaning} @ {when} —— 只说明当时成立，换环境需复核")
         else:
@@ -392,6 +451,13 @@ def cmd_run(args):
 
     meta = entry.get("entry") or {}
     cmd = meta.get("command") or "./adapter.sh"
+
+    form, path = entry_form(tool_dir, meta)
+    if form != "executable":
+        rel = path or os.path.join(tool_dir, cmd)
+        die(f"{args.id} 不能 toolbox run —— 入口 {rel} 不是可执行体（形态: {form}）。\n"
+            f"这类条目是别人的一整套方法/文档，按它自己的流程调用；"
+            f"取法见: toolbox lookup {args.id}")
 
     argv = [cmd]
     argv.extend(meta.get("args") or [])

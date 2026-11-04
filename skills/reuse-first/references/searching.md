@@ -37,8 +37,9 @@ AI 生成的垃圾总结），只在前三源无解时启用。
 
 `toolbox probe` 会扫出本机各 agent 已装的 skill 与 MCP。命中后：
 
-- 工具箱 `toolbox lookup` 命中 → **照它打印的 `调用:` 行拼参数**，那是索引里
-  `entry.usage` 的原样转告；`status: needs_setup` 就先跑打印出来的 `前置:`
+- 工具箱 `toolbox lookup` 命中 → **先看它打的是 `调用:` 还是 `取用:`**：
+  前者可抄进终端（`entry.usage` 的原样转告），后者是文档型条目，按它指的文件读方法。
+  `status: needs_setup` 就先跑打印出来的 `前置:`；`许可:` 那行决定成片能不能分发
 - skill 命中 → 直接按该 skill 的说明调用
 - MCP 命中 → 直接用对应工具
 - 都不命中 → 进入源 3
@@ -115,6 +116,24 @@ toolbox budget --spend --segment "配音引擎" --kind verify       # 验证
 ```
 
 判据：**搜索结果里有没有可以直接跑起来的成片**。只有 API 文档说明它还在零件层。
+
+**质感型的最高形态不是"模板"，是"整包方法"** —— 别人把一整条产线写成可被 agent 调用的
+skill：模板 + 原语 + 光效 + QC 脚本 + 参考片 + 多 agent 派单协议。它的价值不止于观感，
+还在于**它已经把"怎么不出错"写成了脚本**。搜这类东西的词：
+
+```
+好:  "<领域>" agent skill SKILL.md site:github.com
+好:  claude code skill remotion video   /   codex skill explainer video
+好:  "<库名>" skill template qc storyboard
+```
+
+命中后要额外确认三件事（缺一不可，否则第 5 步会翻车）：
+
+| 确认项 | 为什么 | 本轮实测 |
+|---|---|---|
+| **许可与署名** | 整包方法常见非商用许可，会直接约束成片能否分发 | PolyForm Noncommercial 1.0.0：非商用免费、成片归创作者、商用需授权 → 保留 `built by` 署名 |
+| **它的闸门是不是也算契约** | 用它的代码就得走它的确认点 / preflight，跳过等于把工具降级成零件 | 四道用户闸门（时长语言 / 解说词定稿 / TTS 偏好 / 前 30s 样片）不可跳 |
+| **它发的"参考成品"是可跑工程还是产物文件** | 决定第 2 步走正常路径还是走降级路径 | `examples/rag/` 只有 23 帧 + 9 个镜头源码，**无 `package.json`** → 同构比对 |
 
 预算的意义不是限制质量，而是防止「先搜一轮」退化成「先搜三轮」。
 检索本身是成本，复用才是收益。

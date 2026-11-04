@@ -22,12 +22,29 @@ cd ~/agent-toolbox
 ```bash
 toolbox probe                    # 看看本机各 agent 已装了什么
 toolbox lookup pdf               # 按能力标签查现成工具
-toolbox run <id> ...             # 参数形状照 lookup 打印的「调用:」那一行拼
+toolbox run <id> ...             # 可执行条目：参数照 lookup 的「调用:」行拼
 ```
 
 `toolbox lookup` 打印的调用方式是**从索引的 `entry.usage` 原样读出来的**。
 CLI 不替你猜参数 —— 猜出来的提示会被直接照做，错一次就烧掉一轮。
 条目没声明 `usage` 时，它会明说"未声明，先跑烟测看真实接口"。
+
+**能不能 `toolbox run` 由入口文件本身决定，不由 `kind` 的名字决定：**
+
+```
+  调用: toolbox run pdf-table-extract --in <pdf 路径> --out <csv 路径>   ← 可抄进终端
+  许可: MIT
+```
+
+```
+  取用: 读 tools/anything2explainer/SKILL.md，按其中的方法调用（入口不是可执行体，不能 toolbox run）
+  用法: 按 SKILL.md 方法调用：输入选题或文章 + 时长/语言；接口命令抄录见使用方工程的 TOOL_INTERFACE.md
+  许可: PolyForm-Noncommercial-1.0.0  （来源 https://github.com/Vincentwei1021/anything2explainer）
+```
+
+整包 agent skill、模板工程、别人的方法体系是第二种形态：它既不是 adapter 也不是一篇知识。
+`toolbox run` 打在这种条目上会**明确拒绝**，而不是去 exec 一个 `.md`。
+`许可:` 每次都会打出来 —— 非商用 / 需署名这类约束应该出现在调用现场，不该埋在索引字段里。
 
 skill 会自动挂接到各 agent 的 skills 目录，之后 agent 在产出型任务开始前会自己触发。
 
@@ -96,7 +113,7 @@ agent-toolbox/
 ### 统一的是出口，不是参数名
 
 ```bash
-toolbox run <id> <照 lookup「调用:」行拼出的参数>
+toolbox run <id> <照 lookup「调用:」行拼出的参数>    # 打印的是「取用:」时不能 run，去读它指的文件
 toolbox run <id> -- <任意参数>        # 透传给 adapter
 ```
 
@@ -134,7 +151,9 @@ toolbox run <id> -- <任意参数>        # 透传给 adapter
   cost:
     install_minutes: 0
     smoke_test: "./adapter.sh --selftest"
-  verified: true                # 仅表示登记当时烟测真跑通，且不低于 L3
+  verified: true                # 可执行条目：登记当时烟测真跑通，且不低于 L3
+                                # 文档 / 知识条目：该流程或结论在真实任务里走过一遍
+                                # （两者都只代表当时，lookup 的「验证:」行会说清是哪种）
   verified_at: 2026-11-02
   status: ok                    # ok | needs_setup | unavailable | broken
   broken_reason: null
@@ -182,7 +201,7 @@ toolbox run <id> -- <任意参数>        # 透传给 adapter
 只能回答"能不能"，回答不了"好不好看"。
 
 完整规则（功能型 / 质感型分诊、静态筛查与可得性预检、验证四级阶梯 L1–L4、
-检索与验证分账、12 条反模式、完成时自检）只写在
+检索与验证分账、反模式清单、完成时自检）只写在
 [`skills/reuse-first/SKILL.md`](skills/reuse-first/SKILL.md) 与其 `references/` 里。
 本文件不复述 —— 第三份拷贝迟早会和前两份对不上。
 
